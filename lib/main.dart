@@ -8,7 +8,7 @@ import 'dart:async';
 
 // ─── CONFIGURATION ──────────────────────────────────────────
 const String BASE_URL =
-    'http://192.168.1.105:8000'; // 🔁 Replace with your deployed URL
+    "https://agrowise.onrender.com"; // 🔁 Replace with your deployed URL
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
