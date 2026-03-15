@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
-import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:async';
 
 // ─── CONFIGURATION ──────────────────────────────────────────
-const String BASE_URL =
-    "https://agrowise.onrender.com"; // 🔁 Replace with your deployed URL
+const String BASE_URL = 'https://agrowise.onrender.com';
+const String WEATHER_API_KEY = '1eb2298216b09cd00d3a80c6cfa7b257';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,7 +19,6 @@ void main() {
   runApp(const AgroWiseApp());
 }
 
-// ─── THEME ──────────────────────────────────────────────────
 class AppColors {
   static const Color primary = Color(0xFF1B5E20);
   static const Color primaryLight = Color(0xFF2E7D32);
@@ -42,7 +41,7 @@ class AgroWiseApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
-        fontFamily: 'Poppins',
+        textTheme: GoogleFonts.poppinsTextTheme(),
         useMaterial3: true,
         scaffoldBackgroundColor: AppColors.bg,
       ),
@@ -85,7 +84,6 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
         .animate(CurvedAnimation(parent: _textCtrl, curve: Curves.easeOut));
 
     _logoCtrl.forward().then((_) => _textCtrl.forward());
-
     Timer(const Duration(seconds: 3), () {
       if (mounted) {
         Navigator.pushReplacement(
@@ -123,7 +121,6 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Logo circle
               ScaleTransition(
                 scale: _logoScale,
                 child: FadeTransition(
@@ -143,7 +140,6 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 36),
-              // App name
               SlideTransition(
                 position: _textSlide,
                 child: FadeTransition(
@@ -201,6 +197,7 @@ class _HomePageState extends State<HomePage> {
   final _pCtrl = TextEditingController();
   final _kCtrl = TextEditingController();
   final _phCtrl = TextEditingController();
+  final _cityCtrl = TextEditingController();
 
   String _soilType = 'Loamy';
   bool _loadingWeather = false;
@@ -210,52 +207,82 @@ class _HomePageState extends State<HomePage> {
   double? _lat, _lon;
 
   final List<String> _soilTypes = ['Black', 'Clayey', 'Loamy', 'Red', 'Sandy'];
+  final List<String> _quickCities = [
+    'Mumbai',
+    'Delhi',
+    'Bangalore',
+    'Chennai',
+    'Hyderabad',
+    'Pune',
+    'Kolkata',
+    'Mangalore',
+    'Udupi',
+  ];
+  // ── Wake up Render backend on app load ──
+  Future<void> _wakeUpBackend() async {
+    try {
+      await http
+          .get(Uri.parse('$BASE_URL/'))
+          .timeout(const Duration(seconds: 60));
+    } catch (_) {}
+  }
 
   @override
   void initState() {
     super.initState();
-    _fetchWeather();
+    _wakeUpBackend(); // silently wakes backend in background
   }
 
-  Future<void> _fetchWeather() async {
+  @override
+  void dispose() {
+    _nCtrl.dispose();
+    _pCtrl.dispose();
+    _kCtrl.dispose();
+    _phCtrl.dispose();
+    _cityCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── BUG 1 FIXED: fetch directly using city name, use wd keys correctly ──
+  Future<void> _fetchWeatherByCity(String city) async {
+    if (city.trim().isEmpty) return;
     setState(() {
       _loadingWeather = true;
       _weatherError = null;
+      _weather = null;
     });
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) throw Exception('Location services disabled');
-
-      LocationPermission perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-        if (perm == LocationPermission.denied)
-          throw Exception('Permission denied');
-      }
-
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-        timeLimit: const Duration(seconds: 10),
-      );
-      _lat = pos.latitude;
-      _lon = pos.longitude;
-
-      final res = await http
-          .get(
-            Uri.parse('$BASE_URL/weather?lat=$_lat&lon=$_lon'),
-          )
+      final wRes = await http
+          .get(Uri.parse(
+            'https://api.openweathermap.org/data/2.5/weather'
+            '?q=${Uri.encodeComponent(city.trim())}&appid=$WEATHER_API_KEY&units=metric',
+          ))
           .timeout(const Duration(seconds: 10));
 
-      if (res.statusCode == 200) {
-        setState(() {
-          _weather = json.decode(res.body);
-        });
-      } else {
-        throw Exception('Weather fetch failed');
+      if (wRes.statusCode != 200) {
+        throw Exception('City not found. Try "Mumbai" or "Delhi"');
       }
+      final wd = json.decode(wRes.body);
+
+      _lat = (wd['coord']['lat'] as num).toDouble();
+      _lon = (wd['coord']['lon'] as num).toDouble();
+
+      setState(() {
+        _weather = {
+          'temperature': (wd['main']['temp'] as num).toDouble(),
+          'humidity': (wd['main']['humidity'] as num).toDouble(),
+          'rainfall': ((wd['rain'] ?? {})['1h'] ?? 0.0),
+          'city': wd['name'],
+          'country': wd['sys']['country'],
+          'weather_description':
+              (wd['weather'][0]['description'] as String).capitalize(),
+        };
+      });
     } catch (e) {
       setState(() {
-        _weatherError = e.toString();
+        _weatherError = e.toString().replaceAll('Exception: ', '');
+        _lat = null;
+        _lon = null;
       });
     } finally {
       setState(() {
@@ -266,9 +293,11 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _getRecommendation() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_lat == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Waiting for GPS. Please retry.')));
+    if (_weather == null || _lat == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Please enter your city and fetch weather first!'),
+        backgroundColor: Colors.orange,
+      ));
       return;
     }
     setState(() {
@@ -289,7 +318,7 @@ class _HomePageState extends State<HomePage> {
               'longitude': _lon,
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 60));
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
@@ -303,7 +332,15 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+        SnackBar(
+          content: Text(e.toString().contains('timeout')
+              ? '⏳ Server is waking up, please try again in 10 seconds!'
+              : 'Error: $e'),
+          backgroundColor:
+              e.toString().contains('timeout') ? Colors.orange : Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     } finally {
       setState(() {
         _loadingResult = false;
@@ -358,13 +395,106 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              _SectionLabel(
+                  icon: Icons.wb_sunny_outlined,
+                  label: 'Your Location & Weather'),
+              const SizedBox(height: 12),
+
+              // City input row
+              Row(children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _cityCtrl,
+                    textInputAction: TextInputAction.search,
+                    onFieldSubmitted: _fetchWeatherByCity,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    decoration: InputDecoration(
+                      hintText: 'Enter city name (e.g. Udupi)',
+                      prefixIcon: const Icon(Icons.location_city_outlined,
+                          color: AppColors.primary),
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                              color: AppColors.primary.withOpacity(0.3))),
+                      enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                              color: AppColors.primary.withOpacity(0.3))),
+                      focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(
+                              color: AppColors.primary, width: 2)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 14),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _loadingWeather
+                        ? null
+                        : () => _fetchWeatherByCity(_cityCtrl.text),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                    child: _loadingWeather
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.search_rounded, size: 22),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 10),
+
+              // Quick city chips
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _quickCities
+                    .map((city) => GestureDetector(
+                          onTap: () {
+                            _cityCtrl.text = city;
+                            _fetchWeatherByCity(city);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                  color: AppColors.primary.withOpacity(0.25)),
+                            ),
+                            child: Text(city,
+                                style: const TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 14),
+
               _WeatherCard(
                 weather: _weather,
                 loading: _loadingWeather,
                 error: _weatherError,
-                onRetry: _fetchWeather,
+                onRetry: () => _fetchWeatherByCity(_cityCtrl.text),
               ),
               const SizedBox(height: 24),
+
               _SectionLabel(
                   icon: Icons.science_outlined, label: 'Soil Nutrients'),
               const SizedBox(height: 12),
@@ -405,6 +535,7 @@ class _HomePageState extends State<HomePage> {
                 },
               ),
               const SizedBox(height: 20),
+
               _SectionLabel(icon: Icons.layers_outlined, label: 'Soil Type'),
               const SizedBox(height: 12),
               _SoilTypeSelector(
@@ -413,6 +544,7 @@ class _HomePageState extends State<HomePage> {
                 onChanged: (v) => setState(() => _soilType = v),
               ),
               const SizedBox(height: 32),
+
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -486,7 +618,7 @@ class ResultPage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Location + weather chips
+            // BUG 2 FIXED: use correct keys temperature_c and humidity_percent from backend
             _InfoChipRow(
               city: loc['city'],
               country: loc['country'],
@@ -495,7 +627,7 @@ class ResultPage extends StatelessWidget {
             ),
             const SizedBox(height: 20),
 
-            // ── Crop Card ──
+            // Crop card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(24),
@@ -514,55 +646,55 @@ class ResultPage extends StatelessWidget {
                 ],
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    const Text('🌾', style: TextStyle(fontSize: 26)),
-                    const SizedBox(width: 8),
-                    const Text('Recommended Crop',
-                        style: TextStyle(color: Colors.white70, fontSize: 13)),
-                  ]),
-                  const SizedBox(height: 8),
-                  Text(crop['recommended_crop'],
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 34,
-                          fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.accentLight.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text('${crop['confidence']}% confidence',
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Text('🌾', style: TextStyle(fontSize: 26)),
+                      const SizedBox(width: 8),
+                      const Text('Recommended Crop',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 13)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Text(crop['recommended_crop'],
                         style: const TextStyle(
-                            color: AppColors.accentLight,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600)),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(children: [
-                    _CropStat(
-                        icon: Icons.wb_sunny_outlined,
-                        label: 'Season',
-                        value: crop['season']),
-                    _CropStat(
-                        icon: Icons.schedule_outlined,
-                        label: 'Duration',
-                        value: crop['duration']),
-                    _CropStat(
-                        icon: Icons.water_drop_outlined,
-                        label: 'Water',
-                        value: crop['water_requirement']),
+                            color: Colors.white,
+                            fontSize: 34,
+                            fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.accentLight.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text('${crop['confidence']}% confidence',
+                          style: const TextStyle(
+                              color: AppColors.accentLight,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(children: [
+                      _CropStat(
+                          icon: Icons.wb_sunny_outlined,
+                          label: 'Season',
+                          value: crop['season']),
+                      _CropStat(
+                          icon: Icons.schedule_outlined,
+                          label: 'Duration',
+                          value: crop['duration']),
+                      _CropStat(
+                          icon: Icons.water_drop_outlined,
+                          label: 'Water',
+                          value: crop['water_requirement']),
+                    ]),
                   ]),
-                ],
-              ),
             ),
             const SizedBox(height: 16),
 
-            // ── Fertilizer Card ──
+            // Fertilizer card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(24),
@@ -581,52 +713,50 @@ class ResultPage extends StatelessWidget {
                 ],
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    const Text('🧪', style: TextStyle(fontSize: 22)),
-                    const SizedBox(width: 8),
-                    const Text('Recommended Fertilizer',
-                        style: TextStyle(color: Colors.white70, fontSize: 13)),
-                  ]),
-                  const SizedBox(height: 8),
-                  Text(fert['fertilizer_name'],
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 30,
-                          fontWeight: FontWeight.w800)),
-                  Text(fert['full_name'],
-                      style:
-                          const TextStyle(color: Colors.white70, fontSize: 14)),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text('NPK  ${fert['npk_ratio']}',
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Text('🧪', style: TextStyle(fontSize: 22)),
+                      const SizedBox(width: 8),
+                      const Text('Recommended Fertilizer',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 13)),
+                    ]),
+                    const SizedBox(height: 8),
+                    Text(fert['fertilizer_name'],
                         style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.5)),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(fert['usage_tip'],
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 13, height: 1.5)),
-                ],
-              ),
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800)),
+                    Text(fert['full_name'],
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 14)),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text('NPK  ${fert['npk_ratio']}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.5)),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(fert['usage_tip'],
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13, height: 1.5)),
+                  ]),
             ),
             const SizedBox(height: 16),
 
-            // ── Soil Summary ──
             _SoilSummaryCard(soil: soil),
             const SizedBox(height: 16),
 
-            // ── Alternatives ──
             if (top3.isNotEmpty) ...[
               _SectionLabel(
                   icon: Icons.format_list_numbered,
@@ -636,7 +766,6 @@ class ResultPage extends StatelessWidget {
               const SizedBox(height: 16),
             ],
 
-            // ── Try Again ──
             SizedBox(
               width: double.infinity,
               height: 52,
@@ -845,7 +974,6 @@ class _HistoryPageState extends State<HistoryPage> {
 // SHARED WIDGETS
 // ═══════════════════════════════════════════════════════════
 
-// ── App Logo (CustomPainter) ──
 class _AgroLogo extends StatelessWidget {
   final double size;
   const _AgroLogo({required this.size});
@@ -859,8 +987,6 @@ class _LogoPainter extends CustomPainter {
   void paint(Canvas canvas, Size s) {
     final w = s.width;
     final h = s.height;
-
-    // Stem
     canvas.drawPath(
       Path()
         ..moveTo(w * .5, h * .9)
@@ -871,8 +997,6 @@ class _LogoPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round
         ..style = PaintingStyle.stroke,
     );
-
-    // Left leaf
     canvas.drawPath(
       Path()
         ..moveTo(w * .5, h * .55)
@@ -883,8 +1007,6 @@ class _LogoPainter extends CustomPainter {
         ..color = const Color(0xFF56AB2F)
         ..style = PaintingStyle.fill,
     );
-
-    // Right leaf
     canvas.drawPath(
       Path()
         ..moveTo(w * .5, h * .45)
@@ -895,17 +1017,12 @@ class _LogoPainter extends CustomPainter {
         ..color = const Color(0xFF2ECC71)
         ..style = PaintingStyle.fill,
     );
-
-    // Sun
     canvas.drawCircle(
-      Offset(w * .78, h * .22),
-      w * .1,
-      Paint()
-        ..color = const Color(0xFFF79C00)
-        ..style = PaintingStyle.fill,
-    );
-
-    // Top sprout left
+        Offset(w * .78, h * .22),
+        w * .1,
+        Paint()
+          ..color = const Color(0xFFF79C00)
+          ..style = PaintingStyle.fill);
     canvas.drawPath(
       Path()
         ..moveTo(w * .5, h * .3)
@@ -916,8 +1033,6 @@ class _LogoPainter extends CustomPainter {
         ..color = const Color(0xFF56AB2F)
         ..style = PaintingStyle.fill,
     );
-
-    // Top sprout right
     canvas.drawPath(
       Path()
         ..moveTo(w * .5, h * .28)
@@ -934,7 +1049,6 @@ class _LogoPainter extends CustomPainter {
   bool shouldRepaint(_) => false;
 }
 
-// ── Weather Card ──
 class _WeatherCard extends StatelessWidget {
   final Map<String, dynamic>? weather;
   final bool loading;
@@ -948,6 +1062,22 @@ class _WeatherCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!loading && weather == null && error == null) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+        ),
+        child: const Row(children: [
+          Icon(Icons.cloud_outlined, color: AppColors.textMuted, size: 22),
+          SizedBox(width: 10),
+          Text('Enter your city above to load weather',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+        ]),
+      );
+    }
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -977,19 +1107,20 @@ class _WeatherCard extends StatelessWidget {
             ])
           : error != null
               ? Row(children: [
-                  const Icon(Icons.wifi_off, color: Colors.white54, size: 18),
+                  const Icon(Icons.error_outline,
+                      color: Colors.white70, size: 18),
                   const SizedBox(width: 8),
-                  const Expanded(
-                      child: Text('Could not fetch weather',
-                          style:
-                              TextStyle(color: Colors.white70, fontSize: 13))),
+                  Expanded(
+                      child: Text(error!,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13))),
                   GestureDetector(
                     onTap: onRetry,
                     child: const Text('Retry',
                         style: TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w700,
-                            fontSize: 13)),
+                            decoration: TextDecoration.underline)),
                   ),
                 ])
               : Row(children: [
@@ -1037,7 +1168,6 @@ class _WStat extends StatelessWidget {
       ]);
 }
 
-// ── Soil Input Field ──
 class _SoilField extends StatelessWidget {
   final TextEditingController ctrl;
   final String label, hint;
@@ -1051,7 +1181,6 @@ class _SoilField extends StatelessWidget {
       required this.color,
       this.isDecimal = false,
       this.validator});
-
   @override
   Widget build(BuildContext context) => TextFormField(
         controller: ctrl,
@@ -1085,14 +1214,12 @@ class _SoilField extends StatelessWidget {
       );
 }
 
-// ── Soil Type Selector ──
 class _SoilTypeSelector extends StatelessWidget {
   final String selected;
   final List<String> options;
   final ValueChanged<String> onChanged;
   const _SoilTypeSelector(
       {required this.selected, required this.options, required this.onChanged});
-
   static const Map<String, Color> _clr = {
     'Black': Color(0xFF263238),
     'Clayey': Color(0xFF795548),
@@ -1100,7 +1227,6 @@ class _SoilTypeSelector extends StatelessWidget {
     'Red': Color(0xFFC62828),
     'Sandy': Color(0xFFF9A825),
   };
-
   @override
   Widget build(BuildContext context) => Wrap(
         spacing: 10,
@@ -1130,7 +1256,6 @@ class _SoilTypeSelector extends StatelessWidget {
       );
 }
 
-// ── Section Label ──
 class _SectionLabel extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -1147,7 +1272,6 @@ class _SectionLabel extends StatelessWidget {
       ]);
 }
 
-// ── Crop stat on result card ──
 class _CropStat extends StatelessWidget {
   final IconData icon;
   final String label, value;
@@ -1168,7 +1292,6 @@ class _CropStat extends StatelessWidget {
       ]));
 }
 
-// ── Info chip row ──
 class _InfoChipRow extends StatelessWidget {
   final String city, country;
   final double temp, humidity;
@@ -1218,7 +1341,6 @@ class _Chip extends StatelessWidget {
       );
 }
 
-// ── Soil Summary Card ──
 class _SoilSummaryCard extends StatelessWidget {
   final Map<String, dynamic> soil;
   const _SoilSummaryCard({required this.soil});
@@ -1286,7 +1408,6 @@ class _SoilVal extends StatelessWidget {
       ]);
 }
 
-// ── Alternative crop tile ──
 class _AlternativeTile extends StatelessWidget {
   final Map<String, dynamic> crop;
   const _AlternativeTile({required this.crop});
@@ -1336,7 +1457,6 @@ class _AlternativeTile extends StatelessWidget {
   }
 }
 
-// ── String extension ──
 extension StrExt on String {
   String capitalize() =>
       isEmpty ? this : '${this[0].toUpperCase()}${substring(1)}';

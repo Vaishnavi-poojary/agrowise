@@ -1,6 +1,19 @@
-models/*.pkl
-.env
+cat > .gitignore << 'EOF'
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.g.dart
+
+# Python / Backend
 __pycache__/
 *.pyc
 *.pyo
+agrowise-backend/models/*.pkl
+.env
+
+# Misc
 .DS_Store
+*.log
+EOF
