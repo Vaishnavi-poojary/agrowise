@@ -8,7 +8,7 @@ import 'dart:async';
 
 // ─── CONFIGURATION ──────────────────────────────────────────
 const String BASE_URL = 'https://agrowise.onrender.com';
-const String WEATHER_API_KEY = '1eb2298216b09cd00d3a80c6cfa7b257';
+const String WEATHER_API_KEY = '45b3f6baa2b6ea5ca19624f7d83b1317';
 
 // ─── LANGUAGE SUPPORT ───────────────────────────────────────
 enum AppLanguage { english, kannada, hindi, tamil, telugu }
